@@ -28,6 +28,7 @@ import os
 
 from neon.models import Model
 from neon.transforms import Rectlin
+from neon.backends import gen_backend
 from neon.data.datasets import Dataset
 from neon.util.persist import load_obj
 from neon.initializers import Constant, GlorotUniform, Xavier
@@ -81,7 +82,7 @@ def load_weights(model):
     # location and size of the VGG weights file
     url = 'https://s3-us-west-1.amazonaws.com/nervana-modelzoo/VGG/'
     filename = 'VGG_E.p'
-    size = 554227541
+    size = 575467849
 
     # edit filepath below if you have the file elsewhere
     _, filepath = Dataset._valid_path_append('data', '', filename)
@@ -95,11 +96,16 @@ def load_weights(model):
     for layer, params in zip(param_layers, param_dict_list):
         print(layer.name + ", " + params['config']['name'])
         layer.load_weights(params, load_states=True)
+    return Model(param_layers)
+
+
+
 
 
 def main():
+    be = gen_backend(batch_size=64)
     model = build_vgg()
-    load_weights(model)
+    model = load_weights(model)
 
 if __name__ == '__main__':
     main()
