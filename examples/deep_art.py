@@ -24,9 +24,12 @@ Combines the content of a photograph with a painting's style. This is done by...
 
 Usage:
 """
+import os
 
 from neon.models import Model
 from neon.transforms import Rectlin
+from neon.data.datasets import Dataset
+from neon.util.persist import load_obj
 from neon.initializers import Constant, GlorotUniform, Xavier
 from neon.layers import Conv, Dropout, Pooling, GeneralizedCost, Affine
 from neon.optimizers import GradientDescentMomentum, Schedule, MultiOptimizer
@@ -55,19 +58,12 @@ def build_vgg():
     Builds VGG Network (E) based on https://arxiv.org/pdf/1409.1556.pdf
     Uses Average Pooling instead of Max
     """
-    init1 = Xavier(local=True)
-    initfc = GlorotUniform()
-
-    relu = Rectlin()
-
-    # model layers
-    conv_params = {'init': init1,
+    conv_params = {'init': Xavier(local=True),
                    'strides': 1,
                    'padding': 1,
                    'bias': Constant(0),
-                   'activation': relu}
+                   'activation': Rectlin()}
     layers = []
-    i = 0
     for nofm, i in zip([64, 128, 256, 512, 512], xrange(1, 6)):
         layers.append(Conv((3, 3, nofm), name="conv{}_1".format(i), **conv_params))
         layers.append(Conv((3, 3, nofm), name="conv{}_2".format(i), **conv_params))
@@ -79,3 +75,22 @@ def build_vgg():
     model = Model(layers=layers)
 
     return model
+
+def load_weights(model):
+    # location and size of the VGG weights file
+    url = 'https://s3-us-west-1.amazonaws.com/nervana-modelzoo/VGG/'
+    filename = 'VGG_E.p'
+    size = 554227541
+
+    # edit filepath below if you have the file elsewhere
+    _, filepath = Dataset._valid_path_append('data', '', filename)
+    if not os.path.exists(filepath):
+        Dataset.fetch_dataset(url, filename, filepath, size)
+    trained_vgg = load_obj(filepath)
+
+def main():
+    model = build_vgg()
+    import pdb;pdb.set_trace()
+
+if __name__ == '__main__':
+    main()
