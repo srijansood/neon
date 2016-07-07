@@ -84,8 +84,7 @@ def load_weights(model):
     size = 554227541
 
     # edit filepath below if you have the file elsewhere
-    filepath = "/Users/srijan-n/Downloads/VGG_E.p"
-    # _, filepath = Dataset._valid_path_append('data', '', filename)
+    _, filepath = Dataset._valid_path_append('data', '', filename)
     if not os.path.exists(filepath):
         Dataset.fetch_dataset(url, filename, filepath, size)
     trained_vgg = load_obj(filepath)
