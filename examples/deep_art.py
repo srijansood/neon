@@ -76,6 +76,7 @@ def build_vgg():
 
     return model
 
+
 def load_weights(model):
     # location and size of the VGG weights file
     url = 'https://s3-us-west-1.amazonaws.com/nervana-modelzoo/VGG/'
@@ -83,14 +84,23 @@ def load_weights(model):
     size = 554227541
 
     # edit filepath below if you have the file elsewhere
-    _, filepath = Dataset._valid_path_append('data', '', filename)
+    filepath = "/Users/srijan-n/Downloads/VGG_E.p"
+    # _, filepath = Dataset._valid_path_append('data', '', filename)
     if not os.path.exists(filepath):
         Dataset.fetch_dataset(url, filename, filepath, size)
     trained_vgg = load_obj(filepath)
 
+    param_layers = [l for l in model.layers.layers]
+    param_dict_list = trained_vgg['model']['config']['layers']
+
+    for layer, params in zip(param_layers, param_dict_list):
+        print(layer.name + ", " + params['config']['name'])
+        layer.load_weights(params, load_states=True)
+
+
 def main():
     model = build_vgg()
-    import pdb;pdb.set_trace()
+    load_weights(model)
 
 if __name__ == '__main__':
     main()
