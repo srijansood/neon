@@ -16,12 +16,20 @@
 
 
 """
-Implementation of Deep Art (A Neural Network of Artistic Style)
+Implementation of Deep Art (A Neural Network of Artistic Style):
     http://arxiv.org/pdf/1508.06576v2.pdf
+Model based on VGG:
+    https://arxiv.org/pdf/1409.1556.pdf
 Combines the content of a photograph with a painting's style. This is done by...
 
 Usage:
 """
+
+from neon.models import Model
+from neon.transforms import Rectlin
+from neon.initializers import Constant, GlorotUniform, Xavier
+from neon.layers import Conv, Dropout, Pooling, GeneralizedCost, Affine
+from neon.optimizers import GradientDescentMomentum, Schedule, MultiOptimizer
 
 """
 The weights in the normalised (19 layer VGG) network are scaled such that the
@@ -33,7 +41,7 @@ neural network as long as the non-linearities in the network rectifying linear.
 Download Normalized Network:
     https://bethgelab.org/media/uploads/deeptextures/vgg_normalised.caffemodel
 Normalized pretrained Weights:
-    https://s3.amazonaws.com/lasagne/recipes/pretrained/imagenet/vgg19_normalized.pkl
+    https://s3.amazonaws.com/lasagne/recipes/ /imagenet/vgg19_normalized.pkl
 """
 
 """
@@ -42,3 +50,32 @@ Extras:
 - Multiple Style Images
 """
 
+def build_vgg():
+    """
+    Builds VGG Network (E) based on https://arxiv.org/pdf/1409.1556.pdf
+    Uses Average Pooling instead of Max
+    """
+    init1 = Xavier(local=True)
+    initfc = GlorotUniform()
+
+    relu = Rectlin()
+
+    # model layers
+    conv_params = {'init': init1,
+                   'strides': 1,
+                   'padding': 1,
+                   'bias': Constant(0),
+                   'activation': relu}
+    layers = []
+    i = 0
+    for nofm, i in zip([64, 128, 256, 512, 512], xrange(1, 6)):
+        layers.append(Conv((3, 3, nofm), name="conv{}_1".format(i), **conv_params))
+        layers.append(Conv((3, 3, nofm), name="conv{}_2".format(i), **conv_params))
+        if nofm > 128:
+            layers.append(Conv((3, 3, nofm), name="conv{}_3".format(i), **conv_params))
+            layers.append(Conv((3, 3, nofm), name="conv{}_4".format(i), **conv_params))
+        layers.append(Pooling(2, op="avg", strides=2, name="pool{}".format(i)))
+
+    model = Model(layers=layers)
+
+    return model
