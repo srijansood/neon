@@ -25,12 +25,14 @@ Combines the content of a photograph with a painting's style. This is done by...
 Usage:
 """
 import os
+import numpy as np
 
 from neon.models import Model
 from neon.transforms import Rectlin
 from neon.backends import gen_backend
 from neon.data.datasets import Dataset
 from neon.util.persist import load_obj
+from neon.util.argparser import NeonArgparser
 from neon.initializers import Constant, GlorotUniform, Xavier
 from neon.layers import Conv, Dropout, Pooling, GeneralizedCost, Affine
 from neon.optimizers import GradientDescentMomentum, Schedule, MultiOptimizer
@@ -156,6 +158,19 @@ def style_loss(orig, gen, layer):
 
 
 def main():
+    default_overrides = dict(backend='cpu', batch_size=1)
+    parser = NeonArgparser(__doc__, default_overrides=default_overrides)
+    parser.add_argument("--content", '-c',
+                        help="Content Image", required=True)
+    parser.add_argument("--style", '-s',
+                        help="Style Image", required=True)
+    parser.add_argment("--ratio", '-r', default=1e-3, type=float,
+                        help="Alpha-Beta ratio for content and style")
+    parser.add_argument("--art", '-a', default='art_out.png',
+                        help="Save painting to named file")
+    args = parser.parse_args()
+
+
     model = build_vgg()
     load_weights(model)
     print(model.layers.layers[0].W.get())
