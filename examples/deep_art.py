@@ -35,6 +35,8 @@ from neon.initializers import Constant, GlorotUniform, Xavier
 from neon.layers import Conv, Dropout, Pooling, GeneralizedCost, Affine
 from neon.optimizers import GradientDescentMomentum, Schedule, MultiOptimizer
 
+be = gen_backend(batch_size=64)
+
 """
 The weights in the normalised (19 layer VGG) network are scaled such that the
 mean activation of each filter over images and positions is equal to one.
@@ -85,7 +87,8 @@ def load_weights(model):
     size = 575467849
 
     # edit filepath below if you have the file elsewhere
-    _, filepath = Dataset._valid_path_append('data', '', filename)
+    filepath = "/Users/srijan-n/Downloads/VGG_E.p"
+    # _, filepath = Dataset._valid_path_append('data', '', filename)
     if not os.path.exists(filepath):
         Dataset.fetch_dataset(url, filename, filepath, size)
     trained_vgg = load_obj(filepath)
@@ -96,16 +99,77 @@ def load_weights(model):
     for layer, params in zip(param_layers, param_dict_list):
         print(layer.name + ", " + params['config']['name'])
         layer.load_weights(params, load_states=True)
-    return Model(param_layers)
 
 
+def preprocess(im):
+    """
+    Subtracts mean VGG image value
+    """
+    MEAN_VALUE = np.array([103.939, 116.779, 123.68])
 
+    # Convert to BGR
+    im = im[::-1, :, :]
+
+
+def content_loss(orig, gen, layer):
+    """
+    :param orig: Original Image
+    :param gen: Generated Image
+    :return: Squared Error loss b/w feature representations
+    """
+
+    # feature representation
+    orig_feat = orig[layer]
+    gen_feat = gen[layer]
+
+    loss = 0.5 * be.sum((gen_feat - orig_feat)**2)
+    return loss
+
+def gram_matrix(tensor):
+    """
+    Represents feature correlations
+    """
+    tensor.take([:], 1, i)
+    tensor.take([:], 2, j)
+    return i*j
+
+def style_loss(orig, gen, layer):
+    """
+    :param orig: Original Image
+    :param gen: Generated Image
+    :return: Mean squared dist. b/w Gram matrices of orig, gen image
+    """
+    # feature representation
+    orig_feat = orig[layer]
+    gen_feat = gen[layer]
+
+    num_filters = orig.shape[1]
+    size_feats = orig.shape[2] * orig.shape[3]
+
+    gram_orig = gram_matrix(orig)
+    gram_gen = gram_matrix(gen)
+
+    loss = 1./(4 * num_filters**2 * size_feats**2) * \
+           be.sum(gram_gen - gram_orig)
+
+    return loss
 
 
 def main():
-    be = gen_backend(batch_size=64)
     model = build_vgg()
-    model = load_weights(model)
+    load_weights(model)
+    print(model.layers.layers[0].W.get())
+
+    layer_names = ['conv4_2', 'conv1_1', 'conv2_1', 'conv3_1', 'conv4_1',
+                   'conv5_1']
+    layer_indices = [30, 0, 7, 14, 27, 40]
+    # content_layers = ['conv4_2']
+    # style_layers = ['conv1_1', 'conv2_1', 'conv3_1', 'conv4_1', 'conv5_1']
+    layers = {k: model.layers.layers[i] for k, i in
+              zip(layer_names, layer_indices)}
+
+    import pdb; pdb.set_trace()
+    gram_matrix(model)
 
 if __name__ == '__main__':
     main()
