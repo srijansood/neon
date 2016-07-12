@@ -25,6 +25,7 @@ Combines the content of a photograph with a painting's style. This is done by...
 Usage:
 """
 import os
+from PIL import Image
 import numpy as np
 
 from neon.models import Model
@@ -99,18 +100,35 @@ def load_weights(model):
     param_dict_list = trained_vgg['model']['config']['layers']
 
     for layer, params in zip(param_layers, param_dict_list):
-        print(layer.name + ", " + params['config']['name'])
         layer.load_weights(params, load_states=True)
 
 
 def preprocess(im):
     """
     Subtracts mean VGG image value
+    :return: Tensor representing image
     """
-    MEAN_VALUE = np.array([103.939, 116.779, 123.68])
+    im = Image.open(im)
+    MEAN_VALUES = np.array([123.68, 116.779, 103.939])
+    MIN_LENGTH = 600
 
-    # Convert to BGR
-    im = im[::-1, :, :]
+    # Resize so that smallest side is 600
+    w, h = im.size
+    resize_ratio = (min(w, h) * 1.0) / MIN_LENGTH
+    w, h = (int(w/resize_ratio), int(h/resize_ratio))
+    im = im.resize((w,h))
+    w, h = im.size
+
+    # Crop center portion
+    left = w//2 - MIN_LENGTH//2
+    up = h//2 - MIN_LENGTH//2
+    down = h//2 + MIN_LENGTH//2
+    right = w//2 + MIN_LENGTH//2
+    im = im.crop((left, up, right, down))
+
+    np_im = im - MEAN_VALUES
+
+    return im, be.array(np_im)
 
 
 def content_loss(orig, gen, layer):
@@ -131,9 +149,9 @@ def gram_matrix(tensor):
     """
     Represents feature correlations
     """
-    tensor.take([:], 1, i)
-    tensor.take([:], 2, j)
-    return i*j
+    # tensor.take([:], 1, i)
+    # tensor.take([:], 2, j)
+    # return be.dot(i, j)
 
 def style_loss(orig, gen, layer):
     """
@@ -158,15 +176,18 @@ def style_loss(orig, gen, layer):
 
 
 def main():
-    default_overrides = dict(backend='cpu', batch_size=1)
-    parser = NeonArgparser(__doc__, default_overrides=default_overrides)
-    parser.add_argument("--content", '-c',
+    # content_raw, content = preprocess("/Users/srijan-n/Nervana/tubingen.jpg")
+    # style_raw, style = preprocess("/Users/srijan-n/Nervana/starry.jpg")
+    #
+    import ipdb; ipdb.set_trace()
+    parser = NeonArgparser(__doc__)
+    parser.add_argument("--content",
                         help="Content Image", required=True)
-    parser.add_argument("--style", '-s',
+    parser.add_argument("--style",
                         help="Style Image", required=True)
-    parser.add_argment("--ratio", '-r', default=1e-3, type=float,
+    parser.add_argument("--ratio", default=1e-3, type=float,
                         help="Alpha-Beta ratio for content and style")
-    parser.add_argument("--art", '-a', default='art_out.png',
+    parser.add_argument("--art", default='art_out.png',
                         help="Save painting to named file")
     args = parser.parse_args()
 
