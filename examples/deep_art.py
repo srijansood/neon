@@ -25,10 +25,13 @@ Combines the content of a photograph with a painting's style. This is done by...
 Usage:
 """
 import os
-from PIL import Image
+import requests
+from StringIO import StringIO
 import numpy as np
+from PIL import Image
 
 from neon.models import Model
+from neon import NervanaObject
 from neon.transforms import Rectlin
 from neon.backends import gen_backend
 from neon.data.datasets import Dataset
@@ -38,7 +41,6 @@ from neon.initializers import Constant, GlorotUniform, Xavier
 from neon.layers import Conv, Dropout, Pooling, GeneralizedCost, Affine
 from neon.optimizers import GradientDescentMomentum, Schedule, MultiOptimizer
 
-be = gen_backend(batch_size=64)
 
 """
 The weights in the normalised (19 layer VGG) network are scaled such that the
@@ -90,8 +92,7 @@ def load_weights(model):
     size = 575467849
 
     # edit filepath below if you have the file elsewhere
-    filepath = "/Users/srijan-n/Downloads/VGG_E.p"
-    # _, filepath = Dataset._valid_path_append('data', '', filename)
+    _, filepath = Dataset._valid_path_append('data', '', filename)
     if not os.path.exists(filepath):
         Dataset.fetch_dataset(url, filename, filepath, size)
     trained_vgg = load_obj(filepath)
@@ -106,6 +107,7 @@ def load_weights(model):
 def preprocess(im):
     """
     Subtracts mean VGG image value
+    :return: Raw Image for Display purposes
     :return: Tensor representing image
     """
     im = Image.open(im)
@@ -125,10 +127,15 @@ def preprocess(im):
     down = h//2 + MIN_LENGTH//2
     right = w//2 + MIN_LENGTH//2
     im = im.crop((left, up, right, down))
-
+    
+    # Subtract Mean Pixel values
     np_im = im - MEAN_VALUES
 
-    return im, be.array(np_im)
+    # Swap Dimensions so that channels is first
+    np_im_t = np.empty((np_im.shape[2], np_im.shape[0], np_im.shape[1]))
+    np_im_t[:] = np_im.transpose((2, 0, 1))
+
+    return im, be.array(np_im_t, dtype=np.float32)
 
 
 def content_loss(orig, gen, layer):
@@ -176,11 +183,7 @@ def style_loss(orig, gen, layer):
 
 
 def main():
-    # content_raw, content = preprocess("/Users/srijan-n/Nervana/tubingen.jpg")
-    # style_raw, style = preprocess("/Users/srijan-n/Nervana/starry.jpg")
-    #
-    import ipdb; ipdb.set_trace()
-    parser = NeonArgparser(__doc__)
+    parser = NeonArgparser(__doc__, default_overrides=dict(batch_size=1))
     parser.add_argument("--content",
                         help="Content Image", required=True)
     parser.add_argument("--style",
@@ -190,12 +193,34 @@ def main():
     parser.add_argument("--art", default='art_out.png',
                         help="Save painting to named file")
     args = parser.parse_args()
+    
+    global be 
+    be = NervanaObject.be 
+    # python deep_art.py --content https://tuebingen.mpg.de/typo3temp/pics/1b4f45ef69.jpg --style https://upload.wikimedia.org/wikipedia/commons/9/94/Starry_Night_Over_the_Rhone.jpg
 
+    if os.path.exists(args.content):
+        content_raw, content = preprocess(args.content)
+    elif args.content.startswith("http"):
+        r = requests.get(args.content)
+        content_raw, content = preprocess(StringIO(r.content)) 
+
+    if os.path.exists(args.style):
+        style_raw, style = preprocess(args.style)
+    elif args.style.startswith("http"):
+        r = requests.get(args.style)
+        style_raw, style = preprocess(StringIO(r.content)) 
+    
+    # wrapper array for batch size of 4, image dimensions 600x600
+    data = be.zeros((4, 3*600*600)) 
 
     model = build_vgg()
     load_weights(model)
-    print(model.layers.layers[0].W.get())
-
+    model.initialize(content.shape)
+    import pdb; pdb.set_trace()
+    
+    # Forward Propagation
+    res = model.fprop(data)
+    
     layer_names = ['conv4_2', 'conv1_1', 'conv2_1', 'conv3_1', 'conv4_1',
                    'conv5_1']
     layer_indices = [30, 0, 7, 14, 27, 40]
@@ -204,7 +229,6 @@ def main():
     layers = {k: model.layers.layers[i] for k, i in
               zip(layer_names, layer_indices)}
 
-    import pdb; pdb.set_trace()
     gram_matrix(model)
 
 if __name__ == '__main__':
