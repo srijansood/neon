@@ -208,28 +208,29 @@ def main():
         style_raw, style = preprocess(args.style)
     elif args.style.startswith("http"):
         r = requests.get(args.style)
-        style_raw, style = preprocess(StringIO(r.content)) 
-    
-    # wrapper array for batch size of 4, image dimensions 600x600
-    data = be.zeros((4, 3*600*600)) 
-
+        style_raw, style  = preprocess(StringIO(r.content)) 
+   
+    # Build Model
     model = build_vgg()
     load_weights(model)
     model.initialize(content.shape)
-    import pdb; pdb.set_trace()
     
     # Forward Propagation
-    res = model.fprop(data)
-    
-    layer_names = ['conv4_2', 'conv1_1', 'conv2_1', 'conv3_1', 'conv4_1',
-                   'conv5_1']
-    layer_indices = [30, 0, 7, 14, 27, 40]
-    # content_layers = ['conv4_2']
-    # style_layers = ['conv1_1', 'conv2_1', 'conv3_1', 'conv4_1', 'conv5_1']
-    layers = {k: model.layers.layers[i] for k, i in
-              zip(layer_names, layer_indices)}
+    res = model.fprop(content)
+    content_names = ['conv4_2']
+    content_indices = [30]
+    content_layers = {k: model.layers.layers[i].outputs for k, i in
+                zip(content_names, content_indices)}
 
-    gram_matrix(model)
+    res = model.fprop(style)            
+    style_names = ['conv1_1', 'conv2_1', 'conv3_1', 'conv4_1', 'conv5_1']
+    style_indices = [0, 7, 14, 27, 40]
+    style_layers = {k: model.layers.layers[i].outputs for k, i in
+              zip(style_names, style_indices)}
+    
+    layers = {'content': content_layers, 'style': style_layers}
+    import pdb; pdb.set_trace();
+
 
 if __name__ == '__main__':
     main()
