@@ -104,7 +104,7 @@ def load_weights(model):
         layer.load_weights(params, load_states=True)
 
 
-def preprocess(im):
+def preprocess(im, MIN_LENGTH):
     """
     Subtracts mean VGG image value
     :return: Raw Image for Display purposes
@@ -112,7 +112,6 @@ def preprocess(im):
     """
     im = Image.open(im)
     MEAN_VALUES = np.array([123.68, 116.779, 103.939])
-    MIN_LENGTH = 600
 
     # Resize so that smallest side is 600
     w, h = im.size
@@ -140,16 +139,17 @@ def preprocess(im):
 
 def content_loss(orig, gen, layer):
     """
-    :param orig: Original Image
-    :param gen: Generated Image
+    :param orig: Original Image Features
+    :param gen: Generated Image Features
     :return: Squared Error loss b/w feature representations
     """
 
     # feature representation
     orig_feat = orig[layer]
     gen_feat = gen[layer]
-
-    loss = 0.5 * be.sum((gen_feat - orig_feat)**2)
+    
+    loss = be.zeros((1))
+    loss[:] = 0.5 * be.sum((gen_feat - orig_feat)**2)
     return loss
 
 def gram_matrix(tensor):
@@ -182,6 +182,15 @@ def style_loss(orig, gen, layer):
     return loss
 
 
+def get_feats(model, input_tensor, layer_names, layer_indices):
+    """
+    Performs fprop and returns feature maps
+    """
+    model.fprop(input_tensor)
+    feats = {k: model.layers.layers[i].outputs for k, i in 
+            zip(layer_names, layer_indices)}
+    return feats
+
 def main():
     parser = NeonArgparser(__doc__, default_overrides=dict(batch_size=1))
     parser.add_argument("--content",
@@ -190,6 +199,7 @@ def main():
                         help="Style Image", required=True)
     parser.add_argument("--ratio", default=1e-3, type=float,
                         help="Alpha-Beta ratio for content and style")
+    parser.add_argument("--min", default=600, type=int, help="Min Image Length for re-scaling")
     parser.add_argument("--art", default='art_out.png',
                         help="Save painting to named file")
     args = parser.parse_args()
@@ -199,38 +209,43 @@ def main():
     # python deep_art.py --content https://tuebingen.mpg.de/typo3temp/pics/1b4f45ef69.jpg --style https://upload.wikimedia.org/wikipedia/commons/9/94/Starry_Night_Over_the_Rhone.jpg
 
     if os.path.exists(args.content):
-        content_raw, content = preprocess(args.content)
+        content_raw, content = preprocess(args.content, args.min)
     elif args.content.startswith("http"):
         r = requests.get(args.content)
-        content_raw, content = preprocess(StringIO(r.content)) 
+        content_raw, content = preprocess(StringIO(r.content), args.min) 
 
     if os.path.exists(args.style):
-        style_raw, style = preprocess(args.style)
+        style_raw, style = preprocess(args.style, args.min)
     elif args.style.startswith("http"):
         r = requests.get(args.style)
-        style_raw, style  = preprocess(StringIO(r.content)) 
+        style_raw, style  = preprocess(StringIO(r.content), args.min) 
    
     # Build Model
     model = build_vgg()
     load_weights(model)
     model.initialize(content.shape)
     
-    # Forward Propagation
-    res = model.fprop(content)
+    # Forward Propagation and Featur Extraction
     content_names = ['conv4_2']
     content_indices = [30]
-    content_layers = {k: model.layers.layers[i].outputs for k, i in
-                zip(content_names, content_indices)}
+    content_feats = get_feats(model, content, content_names, content_indices)
 
-    res = model.fprop(style)            
     style_names = ['conv1_1', 'conv2_1', 'conv3_1', 'conv4_1', 'conv5_1']
     style_indices = [0, 7, 14, 27, 40]
-    style_layers = {k: model.layers.layers[i].outputs for k, i in
-              zip(style_names, style_indices)}
+    style_feats = get_feats(model, style, style_names, style_indices)
     
-    layers = {'content': content_layers, 'style': style_layers}
+    input_feats = content_feats.copy()
+    input_feats.update(style_feats)
+    # input_feats = {'content': content_layers, 'style': style_layers}
+     
+    # Generating Random Image 
+    generated = be.array(np.random.uniform(-128, 128, (3, args.min, args.min)))
+    gen_feats = get_feats(model, generated, content_names + style_names, 
+            content_indices + style_indices)
+    
+    closs = content_loss(input_feats, gen_feats, 'conv4_2')
     import pdb; pdb.set_trace();
-
+    print(closs.execute())
 
 if __name__ == '__main__':
     main()
