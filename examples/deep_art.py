@@ -61,6 +61,7 @@ Extras:
 - Multiple Style Images
 """
 
+
 def build_vgg():
     """
     Builds VGG Network (E) based on https://arxiv.org/pdf/1409.1556.pdf
@@ -84,6 +85,11 @@ def build_vgg():
 
     return model
 
+def init_model_dict():
+    global model_dict 
+    model_dict = dict()
+    for layer in model.layers.layers:
+        model_dict[layer.name] = layer
 
 def load_weights(model):
     # location and size of the VGG weights file
@@ -129,6 +135,9 @@ def preprocess(im, MIN_LENGTH):
     
     # Subtract Mean Pixel values
     np_im = im - MEAN_VALUES
+    
+    # Normalize values (b/w -1 and +1)
+    np_im = np_im / 128.0
 
     # Swap Dimensions so that channels is first
     np_im_t = np.empty((np_im.shape[2], np_im.shape[0], np_im.shape[1]))
@@ -148,17 +157,21 @@ def content_loss(orig, gen, layer):
     orig_feat = orig[layer]
     gen_feat = gen[layer]
     
-    loss = be.zeros((1))
-    loss[:] = 0.5 * be.sum((gen_feat - orig_feat)**2)
-    return loss
+    loss = 0.5 * be.sum((gen_feat - orig_feat)**2)
+    return loss.asnumpyarray()[0][0]
 
-def gram_matrix(tensor):
+
+def gram_matrix(vector, layer_shape):
     """
     Represents feature correlations
     """
+    tensor = vector.reshape(layer_shape)
+    gram_matrix = be.sum(be.dot(tensor, tensor.transpose()))
+    return gram_matrix
     # tensor.take([:], 1, i)
     # tensor.take([:], 2, j)
     # return be.dot(i, j)
+
 
 def style_loss(orig, gen, layer):
     """
@@ -170,11 +183,12 @@ def style_loss(orig, gen, layer):
     orig_feat = orig[layer]
     gen_feat = gen[layer]
 
-    num_filters = orig.shape[1]
-    size_feats = orig.shape[2] * orig.shape[3]
-
-    gram_orig = gram_matrix(orig)
-    gram_gen = gram_matrix(gen)
+    layer_shape = model_dict[layer].out_shape
+    num_filters = layer_shape[0]
+    size_feats = layer_shape[1] * layer_shape[2]
+    
+    gram_orig = gram_matrix(orig_feat, (num_filters, size_feats))
+    gram_gen = gram_matrix(gen_feat, (num_filters, size_feats))
 
     loss = 1./(4 * num_filters**2 * size_feats**2) * \
            be.sum(gram_gen - gram_orig)
@@ -182,14 +196,23 @@ def style_loss(orig, gen, layer):
     return loss
 
 
-def get_feats(model, input_tensor, layer_names, layer_indices):
+def total_loss(content_image, style_image, generated_image):
+    """
+    Gives Total loss (a*content_loss + b*style_loss)
+    """
+
+
+def get_feats(input_tensor, layer_names, layer_indices):
     """
     Performs fprop and returns feature maps
     """
     model.fprop(input_tensor)
-    feats = {k: model.layers.layers[i].outputs for k, i in 
-            zip(layer_names, layer_indices)}
+    feats = dict()
+    for k, i in zip(layer_names, layer_indices):
+        output = model.layers.layers[i].outputs 
+        feats[k] = be.zeros(output.shape).copy(output)
     return feats
+
 
 def main():
     parser = NeonArgparser(__doc__, default_overrides=dict(batch_size=1))
@@ -221,31 +244,35 @@ def main():
         style_raw, style  = preprocess(StringIO(r.content), args.min) 
    
     # Build Model
+    global model
     model = build_vgg()
+    init_model_dict()
     load_weights(model)
     model.initialize(content.shape)
     
     # Forward Propagation and Featur Extraction
     content_names = ['conv4_2']
     content_indices = [30]
-    content_feats = get_feats(model, content, content_names, content_indices)
+    content_feats = get_feats(content, content_names, content_indices)
 
     style_names = ['conv1_1', 'conv2_1', 'conv3_1', 'conv4_1', 'conv5_1']
     style_indices = [0, 7, 14, 27, 40]
-    style_feats = get_feats(model, style, style_names, style_indices)
+    style_feats = get_feats(style, style_names, style_indices)
     
     input_feats = content_feats.copy()
     input_feats.update(style_feats)
     # input_feats = {'content': content_layers, 'style': style_layers}
      
     # Generating Random Image 
-    generated = be.array(np.random.uniform(-128, 128, (3, args.min, args.min)))
-    gen_feats = get_feats(model, generated, content_names + style_names, 
+    generated = be.array(np.random.uniform(-1, 1, (3, args.min, args.min)))
+    #TODO use neon.Uniform
+    gen_feats = get_feats(generated, content_names + style_names, 
             content_indices + style_indices)
     
     closs = content_loss(input_feats, gen_feats, 'conv4_2')
+    
     import pdb; pdb.set_trace();
-    print(closs.execute())
+    sloss = style_loss(input_feats, gen_feats, 'conv4_2')
 
 if __name__ == '__main__':
     main()
