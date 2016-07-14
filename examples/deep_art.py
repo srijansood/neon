@@ -26,9 +26,9 @@ Usage:
 """
 import os
 import requests
-from StringIO import StringIO
 import numpy as np
 from PIL import Image
+from StringIO import StringIO
 
 from neon.models import Model
 from neon import NervanaObject
@@ -85,11 +85,13 @@ def build_vgg():
 
     return model
 
+
 def init_model_dict():
     global model_dict 
     model_dict = dict()
     for layer in model.layers.layers:
         model_dict[layer.name] = layer
+
 
 def load_weights(model):
     # location and size of the VGG weights file
@@ -110,7 +112,7 @@ def load_weights(model):
         layer.load_weights(params, load_states=True)
 
 
-def preprocess(im, MIN_LENGTH):
+def preprocess(im, min_length):
     """
     Subtracts mean VGG image value
     :return: Raw Image for Display purposes
@@ -121,16 +123,16 @@ def preprocess(im, MIN_LENGTH):
 
     # Resize so that smallest side is 600
     w, h = im.size
-    resize_ratio = (min(w, h) * 1.0) / MIN_LENGTH
+    resize_ratio = (min(w, h) * 1.0) / min_length
     w, h = (int(w/resize_ratio), int(h/resize_ratio))
     im = im.resize((w,h))
     w, h = im.size
 
     # Crop center portion
-    left = w//2 - MIN_LENGTH//2
-    up = h//2 - MIN_LENGTH//2
-    down = h//2 + MIN_LENGTH//2
-    right = w//2 + MIN_LENGTH//2
+    left = w//2 - min_length//2
+    up = h//2 - min_length//2
+    down = h//2 + min_length//2
+    right = w//2 + min_length//2
     im = im.crop((left, up, right, down))
     
     # Subtract Mean Pixel values
@@ -146,19 +148,33 @@ def preprocess(im, MIN_LENGTH):
     return im, be.array(np_im_t, dtype=np.float32)
 
 
+def get_feats(input_tensor, layer_names):
+    """
+    Performs fprop and returns feature maps
+    """
+    model.fprop(input_tensor)
+    feats = dict()
+    for layer in layer_names:
+        output = model_dict[layer].outputs
+        feats[layer] = be.zeros(output.shape).copy(output)
+    return feats
+
+
 def content_loss(orig, gen, layer):
     """
     :param orig: Original Image Features
     :param gen: Generated Image Features
     :return: Squared Error loss b/w feature representations
+    :return: Derivative of Loss w.r.t activations
     """
+    loss = 0.5 * be.sum((gen[layer] - orig[layer])**2)
 
-    # feature representation
-    orig_feat = orig[layer]
-    gen_feat = gen[layer]
-    
-    loss = 0.5 * be.sum((gen_feat - orig_feat)**2)
-    return loss.asnumpyarray()[0][0]
+    mask = be.zeros(gen[layer].shape).copy(gen[layer])
+    mask = be.clip(mask, 0, float("inf"))
+    mask = be.not_equal(mask, 0)
+
+    derivative = be.multiply(gen[layer] - orig[layer], mask)
+    return loss.asnumpyarray()[0][0], derivative.asnumpyarray()
 
 
 def gram_matrix(vector, layer_shape):
@@ -168,9 +184,6 @@ def gram_matrix(vector, layer_shape):
     tensor = vector.reshape(layer_shape)
     gram_matrix = be.sum(be.dot(tensor, tensor.transpose()))
     return gram_matrix
-    # tensor.take([:], 1, i)
-    # tensor.take([:], 2, j)
-    # return be.dot(i, j)
 
 
 def style_loss(orig, gen, layer):
@@ -178,8 +191,9 @@ def style_loss(orig, gen, layer):
     :param orig: Original Image
     :param gen: Generated Image
     :return: Mean squared dist. b/w Gram matrices of orig, gen image
+    :return: Derivative w.r.t activations in given layer
     """
-    # feature representation
+    # feature representations
     orig_feat = orig[layer]
     gen_feat = gen[layer]
 
@@ -190,28 +204,52 @@ def style_loss(orig, gen, layer):
     gram_orig = gram_matrix(orig_feat, (num_filters, size_feats))
     gram_gen = gram_matrix(gen_feat, (num_filters, size_feats))
 
-    loss = 1./(4 * num_filters**2 * size_feats**2) * \
-           be.sum(gram_gen - gram_orig)
+    const = 1.0 / (num_filters**2 * size_feats**2)
+    loss = 0.25 * const * be.sum(gram_gen - gram_orig)
 
-    return loss
+    derivative = (const * gen_feat.transpose() * (gram_gen - gram_orig))\
+        .asnumpyarray()
+    derivative[gen_feat.transpose().asnumpyarray() == 0] = 0
+
+    return loss.asnumpyarray()[0][0], derivative
 
 
-def total_loss(content_image, style_image, generated_image):
+def total_loss(content_names, style_names, generated_image):
     """
     Gives Total loss (a*content_loss + b*style_loss)
+    Also sets global derivative (for gradient)
     """
 
+    # Forward Propagation and Feature Extraction
+    gen_feats = get_feats(generated_image, content_names + style_names)
 
-def get_feats(input_tensor, layer_names, layer_indices):
-    """
-    Performs fprop and returns feature maps
-    """
-    model.fprop(input_tensor)
-    feats = dict()
-    for k, i in zip(layer_names, layer_indices):
-        output = model.layers.layers[i].outputs 
-        feats[k] = be.zeros(output.shape).copy(output)
-    return feats
+    c_loss = s_loss = 0
+    c_diff = []
+    s_diff = []
+
+    c_contrib = 1.0 / len(content_names)
+    for layer in content_names:
+        res = content_loss(content_feats, gen_feats, layer)
+        c_loss += c_contrib * res[0]
+        c_diff.append(res[1])
+
+    s_contrib = 1.0 / len(style_names)
+    for layer in style_names:
+        res = style_loss(style_feats, gen_feats, layer)
+        s_loss += s_contrib * res[0]
+        s_diff.append(res[1])
+
+    loss = alpha * c_loss + beta * s_loss
+
+    import pdb; pdb.set_trace()
+    content_derivative = c_contrib * sum(c_diff)
+    style_derivative = s_contrib * sum(s_diff)
+
+    global total_derivative
+    total_derivative = alpha * content_derivative + beta * style_derivative
+
+    import pdb; pdb.set_trace()
+    return loss
 
 
 def main():
@@ -249,30 +287,28 @@ def main():
     init_model_dict()
     load_weights(model)
     model.initialize(content.shape)
-    
-    # Forward Propagation and Featur Extraction
-    content_names = ['conv4_2']
-    content_indices = [30]
-    content_feats = get_feats(content, content_names, content_indices)
 
+    # Initialize alpha-beta
+    global alpha, beta
+    alpha = args.ratio * 1.0
+    beta = 1.0
+
+    # Layers used for Content and Style Representations
+    content_names = ['conv4_2']
     style_names = ['conv1_1', 'conv2_1', 'conv3_1', 'conv4_1', 'conv5_1']
-    style_indices = [0, 7, 14, 27, 40]
-    style_feats = get_feats(style, style_names, style_indices)
-    
-    input_feats = content_feats.copy()
-    input_feats.update(style_feats)
-    # input_feats = {'content': content_layers, 'style': style_layers}
-     
-    # Generating Random Image 
+
+    # Forward Propagation and Feature Extraction
+    global content_feats, style_feats
+    content_feats = get_feats(content, content_names)
+    style_feats = get_feats(style, style_names)
+
+    # Generating Random Image
+    # TODO use neon.initializers.Uniform ?
     generated = be.array(np.random.uniform(-1, 1, (3, args.min, args.min)))
-    #TODO use neon.Uniform
-    gen_feats = get_feats(generated, content_names + style_names, 
-            content_indices + style_indices)
-    
-    closs = content_loss(input_feats, gen_feats, 'conv4_2')
-    
-    import pdb; pdb.set_trace();
-    sloss = style_loss(input_feats, gen_feats, 'conv4_2')
+
+    # Calculate total loss
+    loss = total_loss(content_names, style_names, generated)
+    import pdb; pdb.set_trace()
 
 if __name__ == '__main__':
     main()
