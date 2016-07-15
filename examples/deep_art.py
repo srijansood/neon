@@ -285,13 +285,22 @@ def total_loss(content_names, style_names, generated_image):
     return loss
 
 
-# def deprocess(generated_image):
-#     gen_np = generated_image.asnumpyarray()
-#
-#     # Swap Dimensions
-#     n
-#
-#     MEAN_VALUES = np.array([123.68, 116.779, 103.939])
+def deprocess(generated_image, out_file):
+    gen_np = generated_image.asnumpyarray()
+
+    # Swap Dimensions (size*size*channels)
+    new_im = np.empty((gen_np.shape[1], gen_np.shape[2], gen_np.shape[0]))
+    new_im[:] = gen_np.transpose((1, 2, 0))
+
+    # Denormalize pixel values
+    new_im = new_im * 128.0
+
+    # Add Mean Pixel Values
+    MEAN_VALUES = np.array([123.68, 116.779, 103.939])
+    new_im = new_im + MEAN_VALUES
+
+    im = Image.fromarray(new_im.astype(np.uint8))
+    im.save('art/'+out_file+'.png')
 
 
 def main():
@@ -303,7 +312,7 @@ def main():
     parser.add_argument("--ratio", default=1e-3, type=float,
                         help="Alpha-Beta ratio for content and style")
     parser.add_argument("--min", default=600, type=int, help="Min Image Length for re-scaling")
-    parser.add_argument("--art", default='art_out.png',
+    parser.add_argument("--art", default='art_out',
                         help="Save painting to named file")
     args = parser.parse_args()
     
@@ -359,6 +368,7 @@ def main():
         total_derivative = total_derivative.reshape(content.shape)
         print(loss)
         generated[:] = generated + total_derivative
+        deprocess(generated, args.art+str(i))
     import pdb; pdb.set_trace()
 
 if __name__ == '__main__':
