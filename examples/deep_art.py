@@ -145,7 +145,7 @@ def load_weights(model):
     trained_vgg = load_obj(filepath)
 
     param_layers = [l for l in model.layers.layers]
-    param_layers = param_layers[1:] # Skip weight loading for DataTransform 
+    param_layers = param_layers[1:] # Skip weight loading for DataTransform
     param_dict_list = trained_vgg['model']['config']['layers']
 
     for layer, params in zip(param_layers, param_dict_list):
@@ -243,20 +243,9 @@ def style_loss(orig, gen, layer):
     const = 1.0 / (num_filters**2 * size_feats**2)
     loss = 0.25 * const * be.sum(gram_gen - gram_orig)
 
-
-    # mask = np.mask.masked_values(gen_feat.asnumpyarray(), 0)
-    # mask = be.zeros(gen[layer].shape).copy(gen_feat)
-    # mask = be.clip(mask, 0, float("inf"))
-    # mask = be.not_equal(mask, 0)
-    # derivative = be.multiply(mask, derivative)
-
     derivative = (const * gen_feat.transpose() * (gram_gen - gram_orig)).\
         asnumpyarray()
     derivative[gen_feat.transpose().asnumpyarray() < 0] = 0
-
-    import pdb; pdb.set_trace()
-
-    res = model_dict[layer].bprop(be.array(derivative))
 
     return loss.asnumpyarray()[0][0], derivative
 
@@ -264,8 +253,6 @@ def style_loss(orig, gen, layer):
 def bprop(error, layer_list, alpha=1.0, beta=0.0):
     for l in reversed(layer_list):
         if l is layer_list[1]:
-            import pdb; pdb.set_trace()
-            print(layer_list[1].name, layer_list[1])
             return layer_list[1].deltas
         altered_tensor = l.be.distribute_data(error, l.parallelism)
         if altered_tensor:
@@ -308,32 +295,23 @@ def total_loss(content_names, style_names, generated_image):
     for layer in reversed(content_names):
         res = content_loss(content_feats, gen_feats, layer)
         c_loss += c_contrib * res[0]
-        c_diff.append(res[1])
+        delta = bprop(be.array(res[1]), get_layer_list(layer))
+        c_diff.append(delta)
 
-    # import pdb;    pdb.set_trace()
-    # delta = model.bprop(be.array(c_diff[0]))
-    delta = bprop(be.array(c_diff[0]), get_layer_list('conv4_2'))
-    # model.layers.bprop(c_diff[0])
-    import pdb; pdb.set_trace()
 
-    # s_contrib = 1.0 / len(style_names)
-    # for layer in reverse(style_names):
-    #     s_loss, s_grad = style_loss(style_feats, gen_feats, layer)
-    #
-    #
-    #
-    # for layer in style_names:
-    #     res = style_loss(style_feats, gen_feats, layer)
-    #     s_loss += s_contrib * res[0]
-    #     s_diff.append(res[1])
+    s_contrib = 1.0 / len(style_names)
+    for layer in reversed(style_names):
+        res = style_loss(style_feats, gen_feats, layer)
+        s_loss += s_contrib * res[0]
+        delta = bprop(be.array(res[1]), get_layer_list(layer))
+        s_diff.append(delta)
 
     loss = alpha * c_loss + beta * s_loss
-
     content_derivative = c_contrib * sum(c_diff)
-    # style_derivative = s_contrib * sum(s_diff)
-
+    style_derivative = s_contrib * sum(s_diff)
     global total_derivative
-    # total_derivative = alpha * content_derivative + beta * style_derivative
+    total_derivative = (alpha * content_derivative + beta * style_derivative).\
+        asnumpyarray()
 
     import pdb; pdb.set_trace()
     return loss
