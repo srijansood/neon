@@ -193,7 +193,7 @@ def get_layer_list(layer_name):
     out_list = []
     for l in model.layers.layers:
         out_list.append(l)
-        if (l.name == layer_name):
+        if (l.name == layer_name+'_Rectlin'):
             return out_list
 
 
@@ -332,6 +332,10 @@ def grad(generated_image, content_names=['conv4_2'] , style_names=
     for layer in reversed(style_names):
         res = style_grad(style_feats, gen_feats, layer)
         delta = be.zeros((1080000, 1))
+        # model.layers.bprop(be.array(res))
+        # delta[:] = model.layers._layers[1].deltas
+
+        # delta[:] = bprop(be.array(res), model.layers._layers)
         delta[:] = bprop(be.array(res), get_layer_list(layer))
         s_diff.append(delta)
 
@@ -341,8 +345,7 @@ def grad(generated_image, content_names=['conv4_2'] , style_names=
     total_derivative = be.zeros((1080000, 1))
     total_derivative = (alpha * content_derivative + beta * style_derivative). \
         astensor()
-    # import pdb; pdb.set_trace()
-    return total_derivative
+    return style_derivative.astensor()
 
 
 def deprocess(generated_image, out_file):
@@ -411,7 +414,7 @@ def main():
 
     # Layers used for Content and Style Representations
     content_names = ['conv4_2']
-    style_names = ['conv1_1', 'conv2_1', 'conv3_1', 'conv4_1', 'conv5_1']
+    style_names = ['conv4_1', 'conv5_1']
 
     # Forward Propagation and Feature Extraction
     global content_feats, style_feats
@@ -424,19 +427,20 @@ def main():
 
     # Calculate total loss
     from scipy.optimize import check_grad
-    # global loss, c_loss, s_loss, total_derivative
-    print(check_grad(content_loss_f, c_grad,
-                     generated.asnumpyarray().reshape(3 * 600 * 600)))
-    # for i in xrange(100):
-    #     loss = total_loss(generated)
-    #     total_derivative = grad(generated)
-    #     total_derivative = total_derivative.reshape(content.shape)
+    global loss, c_loss, s_loss
+
+    # print(check_grad(content_loss_f, c_grad,
     #
-    #     print(check_grad(content_loss_f, c_grad, generated.asnumpyarray().reshape(3*600*600)))
-    #     print(i, loss, c_loss, s_loss)
-    #     generated[:] = generated + 0.01 * total_derivative
-    #     if i%100 == 0:
-    #         deprocess(generated, args.art+str(i))
+    #                  generated.asnumpyarray().reshape(3 * 600 * 600)))
+
+    for i in xrange(100):
+        loss = total_loss(generated, style_names=style_names)
+        total_derivative = grad(generated, style_names=style_names)
+        total_derivative = total_derivative.reshape(content.shape)
+        print(i, loss, c_loss, s_loss)
+        print total_derivative.asnumpyarray().min(), total_derivative.asnumpyarray().mean(), total_derivative.asnumpyarray().max()
+        generated[:] = generated + total_derivative
+        deprocess(generated, args.art+str(i))
     import pdb; pdb.set_trace()
 
 if __name__ == '__main__':
