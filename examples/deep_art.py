@@ -63,37 +63,6 @@ Extras:
 - Multiple Style Images
 """
 
-class FakeLayer(Layer):
-
-    def __init__(self, nout, name=None):
-        init = Xavier(local=True)
-        super(FakeLayer, self).__init__(name, "Disabled")
-        self.nout = nout
-
-    def __str__(self):
-        return "Fake Layer '%s': %d inputs, %d outputs" % (
-            self.name, self.nin, self.nout)
-
-    def configure(self, in_obj):
-        super(FakeLayer, self).configure(in_obj)
-
-        # shape of the input is in (# input features, batch_size)
-        (self.nin, self.nsteps) = interpret_in_shape(self.in_shape)
-
-        # shape of the output is (# output units, batch_size)
-        self.out_shape = (self.nout, self.nsteps)
-
-        # if the shape of the weights have not been allocated,
-        # we know that his layer's W is a tensor of shape (# outputs, # inputs).
-        self.weight_shape = (self.nout, self.nin)
-
-        return self
-
-    def fprop(self, inputs, inference=False, beta=0.0):
-        return self.inputs
-
-    def bprop(self, error, alpha=1.0, beta=0.0):
-        return error
 
 def build_vgg():
     """
@@ -200,6 +169,34 @@ def get_feats(input_tensor, layer_names):
     return feats
 
 
+def bprop(error, layer_list, alpha=1.0, beta=0.0):
+    for l in reversed(layer_list):
+        if l is layer_list[1]:
+            return layer_list[1].deltas
+        altered_tensor = l.be.distribute_data(error, l.parallelism)
+        if altered_tensor:
+            l.revert_list.append(altered_tensor)
+
+        from neon.layers.layer import BranchNode
+        if type(l.prev_layer) is BranchNode or l is layer_list[0]:
+            error = l.bprop(error, alpha, beta)
+        else:
+            error = l.bprop(error)
+
+        for tensor in l.revert_list:
+            model.layers.be.revert_tensor(tensor)
+
+    return layer_list[1].deltas
+
+
+def get_layer_list(layer_name):
+    out_list = []
+    for l in model.layers.layers:
+        out_list.append(l)
+        if (l.name == layer_name):
+            return out_list
+
+
 def content_loss(orig, gen, layer):
     """
     :param orig: Original Image Features
@@ -207,7 +204,7 @@ def content_loss(orig, gen, layer):
     :return: Squared Error loss b/w feature representations
     :return: Derivative of Loss w.r.t activations
     """
-    loss = 0.5 * be.sum((gen[layer] - orig[layer])**2)
+    loss = 0.5 * be.sum((gen[layer] - orig[layer]) ** 2)
     derivative = (gen[layer] - orig[layer]).asnumpyarray()
     derivative[gen[layer].asnumpyarray() < 0] = 0
     return loss.asnumpyarray()[0][0], derivative
@@ -236,46 +233,18 @@ def style_loss(orig, gen, layer):
     layer_shape = model_dict[layer].out_shape
     num_filters = layer_shape[0]
     size_feats = layer_shape[1] * layer_shape[2]
-    
+
     gram_orig = gram_matrix(orig_feat, (num_filters, size_feats))
     gram_gen = gram_matrix(gen_feat, (num_filters, size_feats))
 
-    const = 1.0 / (num_filters**2 * size_feats**2)
+    const = 1.0 / (num_filters ** 2 * size_feats ** 2)
     loss = 0.25 * const * be.sum(gram_gen - gram_orig)
 
-    derivative = (const * gen_feat.transpose() * (gram_gen - gram_orig)).\
+    derivative = (const * gen_feat.transpose() * (gram_gen - gram_orig)). \
         asnumpyarray()
     derivative[gen_feat.transpose().asnumpyarray() < 0] = 0
 
     return loss.asnumpyarray()[0][0], derivative
-
-
-def bprop(error, layer_list, alpha=1.0, beta=0.0):
-    for l in reversed(layer_list):
-        if l is layer_list[1]:
-            return layer_list[1].deltas
-        altered_tensor = l.be.distribute_data(error, l.parallelism)
-        if altered_tensor:
-            l.revert_list.append(altered_tensor)
-
-        from neon.layers.layer import BranchNode
-        if type(l.prev_layer) is BranchNode or l is layer_list[0]:
-            error = l.bprop(error, alpha, beta)
-        else:
-            error = l.bprop(error)
-
-        for tensor in l.revert_list:
-            model.layers.be.revert_tensor(tensor)
-
-    return layer_list[1].deltas
-
-
-def get_layer_list(layer_name):
-    out_list = []
-    for l in model.layers.layers:
-        out_list.append(l)
-        if (l.name == layer_name):
-            return out_list
 
 
 def total_loss(content_names, style_names, generated_image):
@@ -311,10 +280,18 @@ def total_loss(content_names, style_names, generated_image):
     style_derivative = s_contrib * sum(s_diff)
     global total_derivative
     total_derivative = (alpha * content_derivative + beta * style_derivative).\
-        asnumpyarray()
+        astensor()
 
-    import pdb; pdb.set_trace()
     return loss
+
+
+# def deprocess(generated_image):
+#     gen_np = generated_image.asnumpyarray()
+#
+#     # Swap Dimensions
+#     n
+#
+#     MEAN_VALUES = np.array([123.68, 116.779, 103.939])
 
 
 def main():
@@ -338,22 +315,23 @@ def main():
         content_raw, content = preprocess(args.content, args.min)
     elif args.content.startswith("http"):
         r = requests.get(args.content)
-        content_raw, content = preprocess(StringIO(r.content), args.min) 
+        content_raw, content = preprocess(StringIO(r.content), args.min)
+    else:
+        raise (AttributeError("Enter valid filepath/url"))
 
     if os.path.exists(args.style):
         style_raw, style = preprocess(args.style, args.min)
     elif args.style.startswith("http"):
         r = requests.get(args.style)
-        style_raw, style  = preprocess(StringIO(r.content), args.min) 
+        style_raw, style = preprocess(StringIO(r.content), args.min)
+    else:
+        raise(AttributeError("Enter valid filepath/url"))
    
     # Build Model
     global model
     model = build_vgg()
     init_model_dict()
     load_weights(model)
-    # fakeLayer = DataTransform(lambda x: x)
-    # model.layers._layers = [fakeLayer] + model.layers._layers
-    # model.layers.layers = [fakeLayer] + model.layers.layers
     model.initialize(content.shape)
 
     # Initialize alpha-beta
@@ -375,7 +353,12 @@ def main():
     generated = be.array(np.random.uniform(-1, 1, (3, args.min, args.min)))
 
     # Calculate total loss
-    loss = total_loss(content_names, style_names, generated)
+    global loss, total_derivative
+    for i in xrange(5):
+        loss = total_loss(content_names, style_names, generated)
+        total_derivative = total_derivative.reshape(content.shape)
+        print(loss)
+        generated[:] = generated + total_derivative
     import pdb; pdb.set_trace()
 
 if __name__ == '__main__':
