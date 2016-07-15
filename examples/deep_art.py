@@ -205,9 +205,13 @@ def content_loss(orig, gen, layer):
     :return: Derivative of Loss w.r.t activations
     """
     loss = 0.5 * be.sum((gen[layer] - orig[layer]) ** 2)
+    return loss.asnumpyarray()[0][0]
+
+
+def content_grad(orig, gen, layer):
     derivative = (gen[layer] - orig[layer]).asnumpyarray()
     derivative[gen[layer].asnumpyarray() < 0] = 0
-    return loss.asnumpyarray()[0][0], derivative
+    return derivative
 
 
 def gram_matrix(vector, layer_shape):
@@ -237,52 +241,108 @@ def style_loss(orig, gen, layer):
     gram_orig = gram_matrix(orig_feat, (num_filters, size_feats))
     gram_gen = gram_matrix(gen_feat, (num_filters, size_feats))
 
-    const = 1.0 / (num_filters ** 2 * size_feats ** 2)
-    loss = 0.25 * const * be.sum(gram_gen - gram_orig)
+    const = 1.0 / ((num_filters ** 2) * (size_feats ** 2))
+    loss = 0.25 * const * be.sum((gram_gen - gram_orig)**2)
 
     derivative = (const * gen_feat.transpose() * (gram_gen - gram_orig)). \
         asnumpyarray()
     derivative[gen_feat.transpose().asnumpyarray() < 0] = 0
 
-    return loss.asnumpyarray()[0][0], derivative
+    return loss.asnumpyarray()[0][0]
 
 
-def total_loss(content_names, style_names, generated_image):
+def style_grad(orig, gen, layer):
+    orig_feat = orig[layer]
+    gen_feat = gen[layer]
+
+    layer_shape = model_dict[layer].out_shape
+    num_filters = layer_shape[0]
+    size_feats = layer_shape[1] * layer_shape[2]
+
+    gram_orig = gram_matrix(orig_feat, (num_filters, size_feats))
+    gram_gen = gram_matrix(gen_feat, (num_filters, size_feats))
+    const = 1.0 / ((num_filters ** 2) * (size_feats ** 2))
+
+    derivative = (const * gen_feat.transpose() * (gram_gen - gram_orig)). \
+        asnumpyarray()
+    derivative[gen_feat.transpose().asnumpyarray() < 0] = 0
+
+    return derivative
+
+
+def total_loss(generated_image, content_names=['conv4_2'] , style_names=
+    ['conv1_1', 'conv2_1', 'conv3_1', 'conv4_1', 'conv5_1']):
     """
     Gives Total loss (a*content_loss + b*style_loss)
     Also sets global derivative (for gradient)
     """
-
     # Forward Propagation and Feature Extraction
     gen_feats = get_feats(generated_image, content_names + style_names)
 
+    global c_loss, s_loss
     c_loss = s_loss = 0
     c_diff = []
     s_diff = []
 
     c_contrib = 1.0 / len(content_names)
     for layer in reversed(content_names):
-        res = content_loss(content_feats, gen_feats, layer)
-        c_loss += c_contrib * res[0]
-        delta = bprop(be.array(res[1]), get_layer_list(layer))
-        c_diff.append(delta)
-
+        c_loss += c_contrib * content_loss(content_feats, gen_feats, layer)
 
     s_contrib = 1.0 / len(style_names)
     for layer in reversed(style_names):
-        res = style_loss(style_feats, gen_feats, layer)
-        s_loss += s_contrib * res[0]
-        delta = bprop(be.array(res[1]), get_layer_list(layer))
-        s_diff.append(delta)
+        s_loss += s_contrib * style_loss(style_feats, gen_feats, layer)\
 
     loss = alpha * c_loss + beta * s_loss
+    return loss
+
+def c_grad(generated_image):
+    generated_image = generated_image.reshape((3, 600, 600))
+    content_names = ['conv4_2']
+    style_names = ['conv1_1', 'conv2_1', 'conv3_1', 'conv4_1', 'conv5_1']
+    gen_feats = get_feats(be.array(generated_image), content_names + style_names)
+    res = content_grad(content_feats, gen_feats, 'conv4_2')
+    delta = be.zeros((1080000, 1))
+    delta[:] = bprop(be.array(res), get_layer_list('conv4_2'))
+    return delta.asnumpyarray()
+
+def content_loss_f(generated_image):
+    generated_image = generated_image.reshape((3, 600, 600))
+    content_names = ['conv4_2']
+    style_names = ['conv1_1', 'conv2_1', 'conv3_1', 'conv4_1', 'conv5_1']
+    gen_feats = get_feats(be.array(generated_image),
+                          content_names + style_names)
+    res = content_loss(content_feats, gen_feats, 'conv4_2')
+    return res
+
+def grad(generated_image, content_names=['conv4_2'] , style_names=
+    ['conv1_1', 'conv2_1', 'conv3_1', 'conv4_1', 'conv5_1']):
+    gen_feats = get_feats(generated_image, content_names + style_names)
+
+    c_diff = []
+    s_diff = []
+
+    c_contrib = 1.0 / len(content_names)
+    for layer in reversed(content_names):
+        res = content_grad(content_feats, gen_feats, layer)
+        delta = be.zeros((1080000, 1))
+        delta[:] = bprop(be.array(res), get_layer_list(layer))
+        c_diff.append(delta)
+
+    s_contrib = 1.0 / len(style_names)
+    for layer in reversed(style_names):
+        res = style_grad(style_feats, gen_feats, layer)
+        delta = be.zeros((1080000, 1))
+        delta[:] = bprop(be.array(res), get_layer_list(layer))
+        s_diff.append(delta)
+
     content_derivative = c_contrib * sum(c_diff)
     style_derivative = s_contrib * sum(s_diff)
-    global total_derivative
-    total_derivative = (alpha * content_derivative + beta * style_derivative).\
-        astensor()
 
-    return loss
+    total_derivative = be.zeros((1080000, 1))
+    total_derivative = (alpha * content_derivative + beta * style_derivative). \
+        astensor()
+    # import pdb; pdb.set_trace()
+    return total_derivative
 
 
 def deprocess(generated_image, out_file):
@@ -319,6 +379,7 @@ def main():
     global be 
     be = NervanaObject.be 
     # python deep_art.py --content https://tuebingen.mpg.de/typo3temp/pics/1b4f45ef69.jpg --style https://upload.wikimedia.org/wikipedia/commons/9/94/Starry_Night_Over_the_Rhone.jpg
+    # python deep_art.pyt --content art/content.jpg --style style.jpg
 
     if os.path.exists(args.content):
         content_raw, content = preprocess(args.content, args.min)
@@ -362,13 +423,20 @@ def main():
     generated = be.array(np.random.uniform(-1, 1, (3, args.min, args.min)))
 
     # Calculate total loss
-    global loss, total_derivative
-    for i in xrange(5):
-        loss = total_loss(content_names, style_names, generated)
-        total_derivative = total_derivative.reshape(content.shape)
-        print(loss)
-        generated[:] = generated + total_derivative
-        deprocess(generated, args.art+str(i))
+    from scipy.optimize import check_grad
+    # global loss, c_loss, s_loss, total_derivative
+    print(check_grad(content_loss_f, c_grad,
+                     generated.asnumpyarray().reshape(3 * 600 * 600)))
+    # for i in xrange(100):
+    #     loss = total_loss(generated)
+    #     total_derivative = grad(generated)
+    #     total_derivative = total_derivative.reshape(content.shape)
+    #
+    #     print(check_grad(content_loss_f, c_grad, generated.asnumpyarray().reshape(3*600*600)))
+    #     print(i, loss, c_loss, s_loss)
+    #     generated[:] = generated + 0.01 * total_derivative
+    #     if i%100 == 0:
+    #         deprocess(generated, args.art+str(i))
     import pdb; pdb.set_trace()
 
 if __name__ == '__main__':
