@@ -30,6 +30,8 @@ import numpy as np
 from PIL import Image
 from StringIO import StringIO
 
+from neon.layers.layer import Layer,interpret_in_shape, DataTransform
+
 from neon.models import Model
 from neon import NervanaObject
 from neon.transforms import Rectlin
@@ -61,6 +63,37 @@ Extras:
 - Multiple Style Images
 """
 
+class FakeLayer(Layer):
+
+    def __init__(self, nout, name=None):
+        init = Xavier(local=True)
+        super(FakeLayer, self).__init__(name, "Disabled")
+        self.nout = nout
+
+    def __str__(self):
+        return "Fake Layer '%s': %d inputs, %d outputs" % (
+            self.name, self.nin, self.nout)
+
+    def configure(self, in_obj):
+        super(FakeLayer, self).configure(in_obj)
+
+        # shape of the input is in (# input features, batch_size)
+        (self.nin, self.nsteps) = interpret_in_shape(self.in_shape)
+
+        # shape of the output is (# output units, batch_size)
+        self.out_shape = (self.nout, self.nsteps)
+
+        # if the shape of the weights have not been allocated,
+        # we know that his layer's W is a tensor of shape (# outputs, # inputs).
+        self.weight_shape = (self.nout, self.nin)
+
+        return self
+
+    def fprop(self, inputs, inference=False, beta=0.0):
+        return self.inputs
+
+    def bprop(self, error, alpha=1.0, beta=0.0):
+        return error
 
 def build_vgg():
     """
@@ -73,8 +106,14 @@ def build_vgg():
                    'bias': Constant(0),
                    'activation': Rectlin()}
     layers = []
+
+    # Fake layer to allocated deltas buffer to conv1_1
+    layers.append(DataTransform(lambda x: x))
+
     for nofm, i in zip([64, 128, 256, 512, 512], xrange(1, 6)):
         layers.append(Conv((3, 3, nofm), name="conv{}_1".format(i), **conv_params))
+        if i == 5:
+            break
         layers.append(Conv((3, 3, nofm), name="conv{}_2".format(i), **conv_params))
         if nofm > 128:
             layers.append(Conv((3, 3, nofm), name="conv{}_3".format(i), **conv_params))
@@ -106,10 +145,11 @@ def load_weights(model):
     trained_vgg = load_obj(filepath)
 
     param_layers = [l for l in model.layers.layers]
+    param_layers = param_layers[1:] # Skip weight loading for DataTransform 
     param_dict_list = trained_vgg['model']['config']['layers']
 
     for layer, params in zip(param_layers, param_dict_list):
-        layer.load_weights(params, load_states=True)
+            layer.load_weights(params, load_states=True)
 
 
 def preprocess(im, min_length):
@@ -168,13 +208,9 @@ def content_loss(orig, gen, layer):
     :return: Derivative of Loss w.r.t activations
     """
     loss = 0.5 * be.sum((gen[layer] - orig[layer])**2)
-
-    mask = be.zeros(gen[layer].shape).copy(gen[layer])
-    mask = be.clip(mask, 0, float("inf"))
-    mask = be.not_equal(mask, 0)
-
-    derivative = be.multiply(gen[layer] - orig[layer], mask)
-    return loss.asnumpyarray()[0][0], derivative.asnumpyarray()
+    derivative = (gen[layer] - orig[layer]).asnumpyarray()
+    derivative[gen[layer].asnumpyarray() < 0] = 0
+    return loss.asnumpyarray()[0][0], derivative
 
 
 def gram_matrix(vector, layer_shape):
@@ -207,11 +243,52 @@ def style_loss(orig, gen, layer):
     const = 1.0 / (num_filters**2 * size_feats**2)
     loss = 0.25 * const * be.sum(gram_gen - gram_orig)
 
-    derivative = (const * gen_feat.transpose() * (gram_gen - gram_orig))\
-        .asnumpyarray()
-    derivative[gen_feat.transpose().asnumpyarray() == 0] = 0
+
+    # mask = np.mask.masked_values(gen_feat.asnumpyarray(), 0)
+    # mask = be.zeros(gen[layer].shape).copy(gen_feat)
+    # mask = be.clip(mask, 0, float("inf"))
+    # mask = be.not_equal(mask, 0)
+    # derivative = be.multiply(mask, derivative)
+
+    derivative = (const * gen_feat.transpose() * (gram_gen - gram_orig)).\
+        asnumpyarray()
+    derivative[gen_feat.transpose().asnumpyarray() < 0] = 0
+
+    import pdb; pdb.set_trace()
+
+    res = model_dict[layer].bprop(be.array(derivative))
 
     return loss.asnumpyarray()[0][0], derivative
+
+
+def bprop(error, layer_list, alpha=1.0, beta=0.0):
+    for l in reversed(layer_list):
+        if l is layer_list[1]:
+            import pdb; pdb.set_trace()
+            print(layer_list[1].name, layer_list[1])
+            return layer_list[1].deltas
+        altered_tensor = l.be.distribute_data(error, l.parallelism)
+        if altered_tensor:
+            l.revert_list.append(altered_tensor)
+
+        from neon.layers.layer import BranchNode
+        if type(l.prev_layer) is BranchNode or l is layer_list[0]:
+            error = l.bprop(error, alpha, beta)
+        else:
+            error = l.bprop(error)
+
+        for tensor in l.revert_list:
+            model.layers.be.revert_tensor(tensor)
+
+    return layer_list[1].deltas
+
+
+def get_layer_list(layer_name):
+    out_list = []
+    for l in model.layers.layers:
+        out_list.append(l)
+        if (l.name == layer_name):
+            return out_list
 
 
 def total_loss(content_names, style_names, generated_image):
@@ -228,25 +305,35 @@ def total_loss(content_names, style_names, generated_image):
     s_diff = []
 
     c_contrib = 1.0 / len(content_names)
-    for layer in content_names:
+    for layer in reversed(content_names):
         res = content_loss(content_feats, gen_feats, layer)
         c_loss += c_contrib * res[0]
         c_diff.append(res[1])
 
-    s_contrib = 1.0 / len(style_names)
-    for layer in style_names:
-        res = style_loss(style_feats, gen_feats, layer)
-        s_loss += s_contrib * res[0]
-        s_diff.append(res[1])
+    # import pdb;    pdb.set_trace()
+    # delta = model.bprop(be.array(c_diff[0]))
+    delta = bprop(be.array(c_diff[0]), get_layer_list('conv4_2'))
+    # model.layers.bprop(c_diff[0])
+    import pdb; pdb.set_trace()
+
+    # s_contrib = 1.0 / len(style_names)
+    # for layer in reverse(style_names):
+    #     s_loss, s_grad = style_loss(style_feats, gen_feats, layer)
+    #
+    #
+    #
+    # for layer in style_names:
+    #     res = style_loss(style_feats, gen_feats, layer)
+    #     s_loss += s_contrib * res[0]
+    #     s_diff.append(res[1])
 
     loss = alpha * c_loss + beta * s_loss
 
-    import pdb; pdb.set_trace()
     content_derivative = c_contrib * sum(c_diff)
-    style_derivative = s_contrib * sum(s_diff)
+    # style_derivative = s_contrib * sum(s_diff)
 
     global total_derivative
-    total_derivative = alpha * content_derivative + beta * style_derivative
+    # total_derivative = alpha * content_derivative + beta * style_derivative
 
     import pdb; pdb.set_trace()
     return loss
@@ -286,6 +373,9 @@ def main():
     model = build_vgg()
     init_model_dict()
     load_weights(model)
+    # fakeLayer = DataTransform(lambda x: x)
+    # model.layers._layers = [fakeLayer] + model.layers._layers
+    # model.layers.layers = [fakeLayer] + model.layers.layers
     model.initialize(content.shape)
 
     # Initialize alpha-beta
